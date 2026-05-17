@@ -1,0 +1,32 @@
+# Large files / artifacts
+lerobot/
+models/
+hf_cache/
+datasets/
+outputs/
+checkpoints/
+eval_results/
+*.pth
+*.pt
+*.safetensors
+*.bin
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+*.egg-info/
+
+# IDE
+.vscode/
+.idea/
+.DS_Store
+
+# Logs
+*.log
+wandb/
+
+# Conda
+.conda/
