@@ -1,5 +1,11 @@
 # VLA Portfolio: SmolVLA × LIBERO Reproduction
 
+![Python](https://img.shields.io/badge/python-3.12-blue)
+![PyTorch](https://img.shields.io/badge/PyTorch-2.8.0+cu128-EE4C2C)
+![LeRobot](https://img.shields.io/badge/LeRobot-v0.5+-yellow)
+![GPU](https://img.shields.io/badge/GPU-RTX_4090-76B900)
+![License](https://img.shields.io/badge/license-MIT-green)
+
 > 个人 Vision-Language-Action 模型复现项目。基于 Hugging Face SmolVLA-450M，在 LeRobot 框架下完成从环境搭建、模型推理、数据集微调到仿真评估的完整流程。
 
 ## 🎯 项目目标
@@ -113,6 +119,19 @@
 - [SmolVLA Blog](https://huggingface.co/blog/smolvla)
 - [LeRobot GitHub](https://github.com/huggingface/lerobot)
 - [LIBERO Benchmark](https://libero-project.github.io/)
+
+## 👤 About the Author
+
+**Background**: B.S. & M.S. at Southern University of Science and Technology (SUSTech)
+- **B.S.**: Robotics Engineering
+- **M.S.**: Intelligent Manufacturing and Robotics
+
+**Research interests**: modern robot control theory · hybrid force-position / impedance control · 6-DoF force sensor parameter identification and external force estimation · hand-eye calibration · multi-modal visual perception · 6-DoF visual grasping · machine learning / deep learning modeling and optimization · LLM engineering · end-to-end robot system deployment
+
+## 📮 Contact
+
+- **Email**: 1820191867@qq.com
+- **GitHub**: [@BugLoverNaN](https://github.com/BugLoverNaN)
 
 ## 📝 License
 
