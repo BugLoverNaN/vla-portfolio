@@ -1,0 +1,16 @@
+`torch_dtype` is deprecated! Use `dtype` instead!
+Loading M3 finetuned model from:
+  /root/autodl-tmp/vla/outputs/smolvla_so101_m3/checkpoints/last/pretrained_model
+
+Loading  HuggingFaceTB/SmolVLM2-500M-Video-Instruct weights ...
+Loading weights:   0%|          | 0/489 [00:00<?, ?it/s]Loading weights:  16%|█▌        | 77/489 [00:00<00:00, 518.79it/s]Loading weights:  27%|██▋       | 132/489 [00:00<00:00, 528.75it/s]Loading weights:  38%|███▊      | 186/489 [00:00<00:00, 521.52it/s]Loading weights:  49%|████▉     | 239/489 [00:00<00:00, 520.34it/s]Loading weights:  60%|█████▉    | 292/489 [00:00<00:00, 523.26it/s]Loading weights:  79%|███████▊  | 385/489 [00:00<00:00, 656.12it/s]Loading weights:  92%|█████████▏| 452/489 [00:00<00:00, 641.21it/s]Loading weights: 100%|██████████| 489/489 [00:00<00:00, 571.22it/s]
+Reducing the number of VLM layers to 16 ...
+Loading weights from local directory
+Model loaded (450.0M params)
+
+Running inference 3 times (flow matching introduces noise):
+  Run 1: [ 13.872 -26.209  54.021  38.987 -37.148   3.307]
+  Run 2: [ 14.299 -26.519  54.618  37.884 -36.299   3.177]
+  Run 3: [ 15.045 -24.611  53.115  37.556 -36.23    3.026]
+
+M3 finetuned SmolVLA inference SUCCESS

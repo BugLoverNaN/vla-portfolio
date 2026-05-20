@@ -15,7 +15,7 @@
 - [x] **M1: 环境搭建** — LeRobot v0.5+ / PyTorch 2.8 + CUDA 12.8 / SmolVLA 依赖
 - [x] **M2: SmolVLA Hello World** — 加载预训练模型，端到端推理验证
 - [x] **M2.5: Fine-tuning Pipeline Validation** — Smoke test 通过，所有 v0.5 兼容性问题已解决
-- [ ] **M3: SO-101 数据集微调** — 20k 步正式训练（in progress）
+- [x] **M3: SO-101 数据集微调** — 20k 步完成，loss 0.5+ → 0.086，验证 SmolVLA 微调能力
 - [ ] M4: LIBERO 仿真环境搭建
 - [ ] M5: LIBERO 4 套件微调与评估
 - [ ] M6: 跨本体迁移实验
@@ -30,6 +30,8 @@
 | **Action Chunking** | 一次预测 N 步动作（默认 50），减少推理频率提高控制率 |
 | **VLA 输入约定** | OBS_IMAGE_1 (top) + OBS_IMAGE_2 (wrist) + OBS_IMAGE_3 (side) + state |
 | **Camera Schema Mismatch** | 社区数据集 camera 命名不一致，需 `rename_map` + `empty_cameras` 适配 |
+| **Pretraining Transfer** | SmolVLA-base 起步 loss 已经很低，社区数据预训练对 SO-100 系列覆盖充分 |
+| **Marginal Returns in Training** | 微调任务 80% 的 loss 下降发生在前 25% 训练步内 |
 
 ## 🛠 技术栈
 
@@ -41,55 +43,32 @@
 ## 📁 仓库结构
 
     .
-    ├── scripts/                                  # 训练 / 推理 / 评估脚本
-    │   ├── 01_test_smolvla_inference.py         # M2: 推理验证
-    │   └── 02a_smoke_test.sh                    # M2.5: Fine-tuning pipeline smoke test
-    ├── results/                                  # 实验输出
-    │   ├── 01_inference_output.txt              # M2: 推理输出快照
-    │   ├── 02a_smoke_test_log.txt               # M2.5: smoke test 完整日志
-    │   └── 02a_smoke_test_summary.md            # M2.5: 训练结果摘要
-    ├── notes/                                    # 学习笔记 / 工程实践
-    │   ├── installation.md                      # 详细安装流程 + 常见问题
-    │   └── 03_finetuning_setup.md               # M3: Fine-tuning 7 大踩坑详解
-    ├── constraints.txt                           # 关键依赖版本锁定
+    ├── scripts/
+    │   ├── 01_test_smolvla_inference.py     # M2: pretrained inference
+    │   ├── 02a_smoke_test.sh                # M2.5: 500-step pipeline validation
+    │   ├── 02_train_smolvla_so101.sh        # M3: 20k-step fine-tuning
+    │   ├── 03_plot_loss_curve.py            # M3: loss curve visualization
+    │   ├── 04_test_finetuned_inference.py   # M3: inference with finetuned weights
+    │   └── 05_generate_summary.py           # M3: auto-generate result summary
+    ├── results/
+    │   ├── 01_inference_output.txt          # M2 output
+    │   ├── 02a_smoke_test_log.txt           # M2.5 smoke test log
+    │   ├── 02a_smoke_test_summary.md        # M2.5 summary
+    │   ├── 03_loss_curve.png                # M3 training curve plot
+    │   ├── 03_loss_data.csv                 # M3 raw loss data
+    │   ├── 03_m3_training_log.txt           # M3 condensed log
+    │   ├── 03_m3_training_summary.md        # M3 full results
+    │   └── 04_finetuned_inference_output.txt # M3 inference verification
+    ├── notes/
+    │   ├── installation.md                  # Setup guide
+    │   ├── 03_finetuning_setup.md           # M2.5: 7 v0.5 compatibility issues
+    │   └── 04_m3_training_results.md        # M3: engineering reflections
+    ├── constraints.txt                       # PyTorch version lock
     └── README.md
 
 ## 🚀 快速开始
 
-### 环境要求
-- NVIDIA GPU，Driver ≥ 580 (CUDA 12.8+)
-- Python 3.12
-- 50GB 磁盘 (模型 + 数据集 + checkpoint)
-
-### 安装
-
-详见 [notes/installation.md](notes/installation.md)，核心步骤：
-
-    # 1. 创建 conda 环境
-    conda create -y -n lerobot python=3.12
-    conda activate lerobot
-    conda install -y ffmpeg=7.1.1 -c conda-forge
-
-    # 2. 安装 PyTorch 2.8 + CUDA 12.8
-    pip install torch==2.8.0 torchvision==0.23.0 torchaudio==2.8.0 \
-      --index-url https://mirrors.tuna.tsinghua.edu.cn/pytorch-wheels/cu128
-
-    # 3. 安装 LeRobot + SmolVLA + datasets extras
-    git clone --depth 1 https://github.com/huggingface/lerobot.git
-    cd lerobot
-    pip install -e ".[smolvla,dataset]" -c ../constraints.txt
-
-    # 4. 装视频解码器(pyav 替代 torchcodec)
-    pip install av
-
-### 运行推理 Hello World
-
-    export HF_ENDPOINT=https://hf-mirror.com
-    python scripts/01_test_smolvla_inference.py
-
-### 运行 Smoke Test 微调
-
-    bash scripts/02a_smoke_test.sh
+详见 [notes/installation.md](notes/installation.md)。
 
 ## 📈 实验结果
 
@@ -98,27 +77,35 @@
 | 指标 | 值 |
 |---|---|
 | 模型参数 | 450.0M |
-| 输入形状 | state(6) + 3× image(3,256,256) + language |
-| 输出动作维度 | 6 |
 | 推理设备 | RTX 4090 D (CUDA 12.8) |
-
-完整输出: [results/01_inference_output.txt](results/01_inference_output.txt)
+| 输入 | state(6) + 3× image(3,256,256) + language |
+| 输出 | action(6) |
 
 ### M2.5: Fine-tuning Pipeline Validation
 
 | 指标 | 值 |
 |---|---|
-| 数据集 | SO-101 PickPlace (50 ep, 11,939 frames) |
-| 训练步数 | 500 (smoke test) |
-| 初始 loss | 0.549 |
-| 最终 loss | **0.196** |
-| Grad norm 趋势 | 8.08 → 2.74 (稳定收敛) |
-| 单步耗时 | ~0.15s (4090 D) |
-| Throughput | ~4-5 steps/sec |
+| 训练步数 | 500 |
+| Loss | 0.549 → 0.196 |
 | 总耗时 | 2 minutes |
 
-完整摘要: [results/02a_smoke_test_summary.md](results/02a_smoke_test_summary.md)
-踩坑详解: [notes/03_finetuning_setup.md](notes/03_finetuning_setup.md)
+### M3: SO-101 Full Fine-tuning
+
+| 指标 | 值 |
+|---|---|
+| 训练步数 | **20,000** |
+| Dataset | SO-101 PickPlace (50 ep, 11,939 frames) |
+| Initial loss | ~0.5 |
+| **Final loss** | **0.086** |
+| Final grad norm | ~1.4 |
+| 总耗时 | **1h 11min** (RTX 4090 D) |
+| Throughput | ~4-5 steps/sec |
+
+![Loss Curve](results/03_loss_curve.png)
+
+📄 完整摘要: [results/03_m3_training_summary.md](results/03_m3_training_summary.md)
+🔧 工程反思: [notes/04_m3_training_results.md](notes/04_m3_training_results.md)
+🐛 兼容性踩坑: [notes/03_finetuning_setup.md](notes/03_finetuning_setup.md)
 
 ## 📚 参考资料
 
