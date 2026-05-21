@@ -154,3 +154,125 @@ To avoid these issues on a fresh setup:
 2. Pin `torch`, `torchvision`, `torchaudio` in `constraints.txt` to prevent silent upgrades.
 3. Prefer pyav over torchcodec for video decoding unless explicit performance benchmarks demand otherwise.
 4. Test with a 500-step smoke run before committing to a full multi-hour training job.
+
+---
+
+## M4 LIBERO Integration Pitfalls (2026-05-22)
+
+The following issues were encountered while preparing the LIBERO simulation environment and dataset. All resolved.
+
+### #8 — egl_probe build fails on CMake 4.x
+
+**Context**: Running `pip install -e ".[libero]"` to install LIBERO extras.
+
+**Symptom**:
+
+    CMake Error at CMakeLists.txt:1 (cmake_minimum_required):
+      Compatibility with CMake < 3.5 has been removed from CMake.
+      Update the VERSION argument <min> value.
+      Or, add -DCMAKE_POLICY_VERSION_MINIMUM=3.5 to try configuring anyway.
+
+**Root cause**: `egl_probe` (a transitive dependency of LIBERO for EGL device probing) ships a `CMakeLists.txt` using pre-3.5 syntax. AutoDL images ship CMake 4.x, which dropped compatibility with that range.
+
+**Fix**:
+
+    export CMAKE_POLICY_VERSION_MINIMUM=3.5
+    pip install -e ".[libero]"
+
+The env var tells CMake 4.x to apply pre-3.5 policy defaults instead of erroring. This is the official escape hatch documented in CMake's release notes.
+
+**Engineering insight**: C++ extensions in ML packages often lag behind toolchain releases by years. When facing native build failures, the first diagnostic question is "is this a version-compatibility issue between the native toolchain (CMake / gcc / setuptools) and the Python wrapper?"
+
+---
+
+### #9 — LIBERO assets distribution failures (HF mirror 429 / rate-limiting)
+
+**Context**: First `python scripts/06_test_libero_env.py` run triggers LIBERO to download ~70MB of scene assets (XML + meshes) from `lerobot/libero-assets` on HuggingFace.
+
+**Symptom**: Repeated `HTTP 429 Too Many Requests` from hf-mirror, then SSL handshake timeout. Local fallback also fails (assets missing in package). Final error:
+
+    FileNotFoundError: libero/libero/assets/scenes/libero_tabletop_base_style.xml
+
+**Root cause**: LIBERO assets consist of hundreds of small files (per-scene XML/OBJ/STL/MSH). Concurrent fetches from hf-mirror trigger per-IP rate limiting. AutoDL's IP range hits the limit fast.
+
+**Fix**: Bypass the mirror entirely by cloning the LIBERO source repo from GitHub via AutoDL's academic accelerator:
+
+    source /etc/network_turbo
+    cd /tmp && git clone --depth 1 https://github.com/Lifelong-Robot-Learning/LIBERO.git
+    LIBERO_ASSETS_DIR=$(python -c "import libero, os; print(os.path.dirname(libero.__file__) + '/libero/assets')")
+    rm -rf $LIBERO_ASSETS_DIR
+    cp -r /tmp/LIBERO/libero/libero/assets $LIBERO_ASSETS_DIR
+
+**Engineering insight**: When a mirror service rate-limits you, try the original source via accelerated egress instead of fighting the mirror. The original LIBERO repo on GitHub contains complete assets and is reachable via academic accelerator in <1 minute.
+
+---
+
+### #10 — HuggingFaceVLA/libero dataset: xethub S3 503 + download fragility
+
+**Context**: Downloading the 32GB `HuggingFaceVLA/libero` dataset (377 parquet files).
+
+**Symptom**: Persistent `503 Service Unavailable` errors from `cas-bridge.xethub.hf.co` (HuggingFace's xet protocol S3 backend). aria2 retries indefinitely; ~10 files fail to download even after multiple retry rounds.
+
+**Root cause**: HuggingFace splits large dataset files via the xet protocol, which stores actual bytes on S3 (`cas-bridge.xethub.hf.co`). The S3 endpoint enforces aggressive rate limiting for clients without authentication tokens.
+
+**Fix** (combined approach):
+1. **Multi-threaded retry with hfd**: 8-way parallel via `~/hfd.sh <repo> --dataset --tool aria2c -x 8`
+2. **Mirror + accelerator fallback**: Switch between `HF_ENDPOINT=https://hf-mirror.com` and `source /etc/network_turbo + unset HF_ENDPOINT`
+3. **Resume support**: hfd uses aria2 session files, so re-running picks up where it left off
+
+For the final 6 stubborn files, fell back to direct `wget --continue` via academic accelerator.
+
+**Engineering insight**: HF Hub downloads are not a single API but a multi-stage redirect chain (HF API → xethub presigned URL → S3 object). Each stage has its own rate limits. When stuck, try cycling between endpoints and tools rather than hammering the same stuck request.
+
+---
+
+### #11 — Nested directory pollution from hfd resume
+
+**Context**: After multiple hfd retries from different working directories, the dataset ended up in two nested locations.
+
+**Symptom**:
+
+    /root/autodl-tmp/vla/datasets/libero/data/        ← partially downloaded
+    /root/autodl-tmp/vla/datasets/libero/libero/data/ ← also partially downloaded
+    /root/autodl-tmp/vla/datasets/libero/libero/libero/data/ ← yet another partial!
+
+Each level had a different subset of files. No single directory was complete.
+
+**Root cause**: `hfd` infers the target subdirectory from `repo_id` when started inside a directory that already matches the pattern. Re-running it from different `cwd`s created nested duplicates.
+
+**Fix**: Merge with `mv -n` (no-clobber, keeps existing files):
+
+    INNER=/root/autodl-tmp/vla/datasets/libero/libero/data/chunk-000
+    OUTER=/root/autodl-tmp/vla/datasets/libero/data/chunk-000
+    mv -n $INNER/*.parquet $OUTER/
+    rm -rf /root/autodl-tmp/vla/datasets/libero/libero/
+
+**Engineering insight**: For download/sync tools that resume by directory state, always run them from the same working directory. `mv -n` is the safe merge pattern: it preserves existing files and only moves what's missing.
+
+---
+
+### #12 — Disk full masquerading as 503 / SSL timeout / "stuck process"
+
+**Context**: Multiple seemingly-unrelated failures over several hours: aria2 503 errors, wget "stuck", Python `LeRobotDataset()` silently hanging with no output.
+
+**Symptom diversity**:
+- `aria2: errorCode=16 ... cause: No space left on device` (clear)
+- `wget: Cannot write to 'file-340.parquet' (Success)` (misleading "Success")
+- `Python: LeRobotDataset(...)` hangs indefinitely after printing "Loading..." (no error)
+- `OSError: [Errno 28] No space left on device` deep in pyarrow / fsspec traceback (only when error surfaces)
+
+**Root cause**: AutoDL default data disk is 50GB. The LIBERO dataset (32GB parquet) + HuggingFace `datasets` library Arrow cache (~100GB) + M3 checkpoints (13GB) far exceed it. Symptoms manifested differently depending on which layer hit the disk-full condition first.
+
+**Fix** (two-part):
+1. **Redirect HF cache to data disk** (otherwise it goes to `~/.cache/`):
+
+       echo 'export HF_HOME=/root/autodl-tmp/hf_cache' >> ~/.bashrc
+       echo 'export HF_DATASETS_CACHE=/root/autodl-tmp/hf_cache/datasets' >> ~/.bashrc
+       echo 'export HUGGINGFACE_HUB_CACHE=/root/autodl-tmp/hf_cache/hub' >> ~/.bashrc
+       source ~/.bashrc
+       mkdir -p $HF_DATASETS_CACHE $HUGGINGFACE_HUB_CACHE
+
+2. **Resize data disk** via AutoDL console: 50GB → 145GB (sufficient for ~100GB Arrow cache + room for training checkpoints)
+
+**Engineering insight**: This is the single most important takeaway from M4. When facing inexplicable "network errors" or "stuck processes" in ML pipelines, **always check disk first** via `df -h`. ML data pipelines write large temporary files in non-obvious places (fsspec local cache, datasets Arrow cache, pyarrow scratch). A full disk surfaces as 5+ different error messages across the stack. PNG bytes embedded in parquet means the LeRobot dataset doesn't need a `videos/` directory — the `info.json` `video_path` template is just an unused schema field.
+
