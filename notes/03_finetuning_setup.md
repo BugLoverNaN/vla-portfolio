@@ -276,3 +276,46 @@ Each level had a different subset of files. No single directory was complete.
 
 **Engineering insight**: This is the single most important takeaway from M4. When facing inexplicable "network errors" or "stuck processes" in ML pipelines, **always check disk first** via `df -h`. ML data pipelines write large temporary files in non-obvious places (fsspec local cache, datasets Arrow cache, pyarrow scratch). A full disk surfaces as 5+ different error messages across the stack. PNG bytes embedded in parquet means the LeRobot dataset doesn't need a `videos/` directory — the `info.json` `video_path` template is just an unused schema field.
 
+
+---
+
+## M5 Training Pitfalls (2026-05-24)
+
+### #13 — LeRobot draccus parser rejects Python expressions
+
+**Context**: Trying to pass dataset.episodes='range(1261, 1693)' to lerobot-train.
+
+**Symptom**:
+
+    draccus.utils.DecodingError: dataset.episodes: Could not decode the value into any of the given types:
+        list[int]: The given value='range(1261, 1693)' is not of a valid input for a list type
+
+**Root cause**: LeRobot v0.5 uses draccus for CLI config parsing. It expects JSON literals, not Python expressions. range(...) is a Python builtin, not a JSON form.
+
+**Fix**: Materialize the range to JSON list at shell level:
+
+    EPISODES=$(python -c "import json; print(json.dumps(list(range(1261, 1693))))")
+    lerobot-train --dataset.episodes="$EPISODES" ...
+
+**Engineering insight**: When a CLI tool rejects "obviously valid" syntax, check what parser it uses. Different parsers (argparse, click, draccus, hydra, fire) have very different opinions on what's valid input.
+
+---
+
+### #14 — Eval requires same rename_map as training
+
+**Context**: Running lerobot-eval after training, hit feature mismatch error.
+
+**Symptom**:
+
+    ValueError: Feature mismatch between dataset/environment and policy config.
+    - Missing features: ['observation.images.camera1', ...]
+    - Extra features: ['observation.images.image', 'observation.images.image2']
+
+**Root cause**: LIBERO simulation outputs cameras with dataset-original names (image, image2), but the policy was trained with renamed features (camera1, camera2). The rename mapping must be applied at eval time too.
+
+**Fix**: Pass identical --rename_map argument to lerobot-eval:
+
+    lerobot-eval ... \
+      --rename_map='{"observation.images.image": "observation.images.camera1", "observation.images.image2": "observation.images.camera2"}'
+
+**Engineering insight**: Schema transformations during training need to be replayed at inference/eval time. The LeRobot error message is exemplary — it lists exact missing/extra features and shows the fix.
