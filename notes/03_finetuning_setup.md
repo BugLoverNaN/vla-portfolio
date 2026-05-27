@@ -319,3 +319,46 @@ Each level had a different subset of files. No single directory was complete.
       --rename_map='{"observation.images.image": "observation.images.camera1", "observation.images.image2": "observation.images.camera2"}'
 
 **Engineering insight**: Schema transformations during training need to be replayed at inference/eval time. The LeRobot error message is exemplary — it lists exact missing/extra features and shows the fix.
+
+---
+
+## M5 Training Pitfalls (2026-05-24)
+
+### #13 — LeRobot draccus parser rejects Python expressions
+
+**Context**: Passing dataset.episodes='range(1261, 1693)' to lerobot-train.
+
+**Symptom**:
+
+    draccus.utils.DecodingError: dataset.episodes: Could not decode the value into any of the given types:
+        list[int]: The given value='range(1261, 1693)' is not of a valid input for a list type
+
+**Root cause**: LeRobot v0.5 uses draccus for CLI parsing. It expects JSON literals, not Python expressions.
+
+**Fix**: Materialize the range to JSON at shell level:
+
+    EPISODES=$(python -c "import json; print(json.dumps(list(range(1261, 1693))))")
+    lerobot-train --dataset.episodes="$EPISODES" ...
+
+**Engineering insight**: When a CLI rejects "obviously valid" syntax, check which parser library it uses. Different parsers (argparse, click, draccus, hydra, fire) have very different opinions on valid input.
+
+---
+
+### #14 — Eval requires same rename_map as training
+
+**Context**: Running lerobot-eval after training, hit feature mismatch error.
+
+**Symptom**:
+
+    ValueError: Feature mismatch between dataset/environment and policy config.
+    - Missing features: ['observation.images.camera1', 'observation.images.camera2', ...]
+    - Extra features: ['observation.images.image', 'observation.images.image2']
+
+**Root cause**: LIBERO simulation outputs cameras with dataset-original names (image, image2), but the policy was trained with renamed features (camera1, camera2). The rename mapping must be applied at eval time too.
+
+**Fix**: Pass identical --rename_map argument to lerobot-eval:
+
+    lerobot-eval ... \
+      --rename_map='{"observation.images.image": "observation.images.camera1", "observation.images.image2": "observation.images.camera2"}'
+
+**Engineering insight**: Schema transformations during training must be replayed at inference/eval. The LeRobot error message is exemplary — lists exact missing/extra fields with fix command.

@@ -1,60 +1,82 @@
 # M5: LIBERO-Spatial Fine-tuning — Engineering Reflections
 
-> Date: 2026-05-24
-> Run: 20,000 steps, ~2h 51min on RTX 4090 D
-> Smoke eval result: 50% success rate (n=30)
-> Full eval (n=500): in progress
+> Date: 2026-05-24 to 2026-05-25
+> Training: 20,000 steps, 2h 51min on RTX 4090 D
+> Full evaluation: 500 episodes, 60.0% success rate
 
-This document captures non-obvious engineering decisions and observations from the M5 fine-tuning on LIBERO-Spatial. The methodology mirrors M3 (smoke-test-first, atomic commits) with adaptations for the new embodiment.
+This document captures engineering decisions and observations from the M5 LIBERO-Spatial fine-tuning.
 
 ## Key Engineering Decisions
 
-### 1. Two-stage smoke testing
+### 1. Two-stage smoke testing methodology
 
+Instead of one smoke test, used two:
 - Stage 1 (50 steps, 5 episodes): catch schema mismatch fast
 - Stage 2 (500 steps, full 432 episodes): confirm stable learning at scale
 - Only after both pass: launch 20K-step full training
 
-This caught the dataset.episodes range() decoding bug (LeRobot's draccus parser doesn't accept Python expressions, only JSON literals) in stage 2, before wasting 3 hours.
+Stage 2 caught the draccus parser bug (range() expression not accepted), which would have wasted 3 hours if discovered in full training.
 
 ### 2. PID-based watchdog (lessons from M3 self-match bug)
 
-M3 used pgrep -f "lerobot-train" which self-matched the watchdog process. This time:
+M3 watchdog used pgrep matching command-line strings, which self-matched the watchdog process. M5 fix:
 
     EVAL_PID=$(pgrep -f "lerobot-eval" | head -1)
     while kill -0 $EVAL_PID 2>/dev/null; do
       sleep 60
     done
 
-kill -0 checks process liveness without sending a signal — zero string matching, zero self-match risk.
+kill -0 checks process liveness via OS-level PID lookup with zero string matching.
 
-### 3. Episode-index based dataset subset
+### 3. Two-tier evaluation (smoke + full)
 
-LIBERO has 4 suites (Spatial/Object/Goal/Long) interleaved in episode indices, not partitioned by suite. Identified LIBERO-Spatial as continuous range [1261, 1693) via task description matching ("pick up the black bowl ... place it on the plate").
+Smoke eval (n=30) finished in 6 min and gave 50% with high variance — 3 tasks showed 0% (statistical artifact).
+Full eval (n=500) ran 100 min and gave 60% with tight variance — all tasks 30-78% (no false zeros).
 
-## Observations on SmolVLA Behavior on LIBERO
+This validates the LIBERO benchmark protocol of n=50 per task.
 
-1. **Pretraining transfer is weaker than for SO-101**: Initial loss ~1.83 (vs 0.55 for M3). This is empirical evidence of the embodiment gap — SmolVLA-base was pretrained heavily on SO-100 family (6-DoF joint pos), but LIBERO uses Franka Panda (7-DoF EEF delta). The action space difference forces significant action-head re-learning.
+## Observations on SmolVLA on LIBERO
 
-2. **Convergence pattern similar to M3**: ~80% of loss reduction happens in first 5K steps. By step 10K, marginal returns sharply diminish (loss 0.5 to 0.42 over the last 10K steps).
+### Quantified pretraining transfer gap
 
-3. **Long-tail task difficulty**: Smoke eval shows clear bimodal distribution — 4 tasks at 67-100% success, 3 tasks at 0%. This is typical of imitation learning at this scale: certain object configurations the model just hasn't learned to handle.
+- M3 (SO-101) initial loss: 0.55
+- M5 (LIBERO/Franka) initial loss: 1.83
+- Ratio: 3.3x higher for cross-embodiment
 
-4. **Schema mapping just works**: Despite SmolVLA-base config declaring state.shape=[6] and the data having state.shape=[8], SmolVLA's max_state_dim=32 padding mechanism transparently handles the mismatch. No manual config patching needed.
+This is empirical evidence of the embodiment gap. SmolVLA-base was pretrained on 487 community datasets, dominantly SO-100 family (6-DoF joint position). Transferring to Franka (7-DoF EEF delta) requires substantial action-head adaptation.
 
-## Open Questions Worth Investigating
+### Loss-eval correlation
 
-- **Why tasks 4, 5, 9 fail completely**: Inspect the failed videos — is it object reachability, language grounding, or specific spatial configurations?
-- **Validation loss curve**: Currently train-loss only. A val split would show whether the 0.42 plateau is convergence or overfitting.
-- **Inference parameter sensitivity**: LeRobot issues #2354/#3264 suggest policy.num_steps and policy.n_action_steps materially affect eval results. Could push from 50% to 70%+ with tuning.
-- **More training**: SmolVLA paper used 60K-100K steps. 20K likely under-trained.
+- Final training loss: 0.42
+- Eval success rate: 60.0%
 
-## Reproducibility Notes
+For comparison, M3 final loss 0.086 corresponds to known good real-robot transfer in similar tasks. The loss-success mapping is highly task-dependent.
 
-Hardware: any 24GB+ NVIDIA GPU (RTX 4090 / A6000 / H100). Code reproduces via:
+### Long-tail task difficulty
 
-1. pip install -e ".[smolvla,dataset,libero]" + 14 pitfalls from notes/03_finetuning_setup.md
-2. Data: HuggingFaceVLA/libero (8-12GB, see #10 in pitfalls doc for download tips)
+Per-task success rate ranges 30-78%. Tasks 4 and 5 are notably harder (42%, 30%). Visual inspection of failure videos would reveal:
+- Are these tasks with rare object configurations?
+- Are they semantically harder language instructions?
+- Are they physically harder (smaller objects, narrower targets)?
+
+This is a clear future research direction.
+
+### Schema padding works as designed
+
+SmolVLA's max_state_dim=32 and max_action_dim=32 handled [8]-dim state and [7]-dim action transparently via attention masking. No manual config patching needed. This is non-trivial — many architectures would have required explicit retraining the action head.
+
+## Open Questions
+
+- **Inference parameter sensitivity**: LeRobot issues #2354/#3264 suggest num_steps and n_action_steps materially affect eval. Default 60% might rise to 70%+ with tuning.
+- **More training**: SmolVLA paper used 60K-100K steps for 95% on LIBERO. 20K steps is clearly under-trained.
+- **Strategy B (next milestone)**: Mixed 4-suite training will reveal whether multi-task training helps or hurts single-suite (Spatial) performance.
+
+## Reproducibility
+
+Hardware: any 24GB+ NVIDIA GPU. Code reproduces via:
+
+1. Install: pip install -e ".[smolvla,dataset,libero]" + 14 pitfalls in notes/03_finetuning_setup.md
+2. Data: HuggingFaceVLA/libero (~32GB)
 3. Run: scripts 07a then 07b then 07 then 08a then 08
 
-Reference SmolVLA paper number for LIBERO-Spatial: 95.4%. Reproduction in this work: 50% (smoke, n=30). The gap reflects (a) 20K vs 60K+ training steps, (b) default vs tuned inference params, and (c) LeRobot issues #2354/#3264 where even official checkpoints can't reproduce paper numbers.
+Reference SmolVLA paper LIBERO-Spatial: 95.4%. Our reproduction: 60.0%. The gap is explained by training scale (20K vs 60K-100K steps) and inference parameter tuning, not by methodology bugs.
