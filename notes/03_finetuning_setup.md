@@ -362,3 +362,57 @@ Each level had a different subset of files. No single directory was complete.
       --rename_map='{"observation.images.image": "observation.images.camera1", "observation.images.image2": "observation.images.camera2"}'
 
 **Engineering insight**: Schema transformations during training must be replayed at inference/eval. The LeRobot error message is exemplary — lists exact missing/extra fields with fix command.
+
+---
+
+## M5b Training Pitfalls (2026-05-27)
+
+### #15 — GPU underutilization: data_s >> updt_s
+
+**Context**: Training SmolVLA on LIBERO, GPU utilization only ~50%.
+
+**Symptom**: In training logs, data_s (dataloader wait time) consistently larger than updt_s (GPU update time):
+
+    step:50 ... updt_s:0.194 data_s:0.823
+
+**Root cause**: LeRobot default num_workers=4 cannot prepare data fast enough to keep GPU fed, especially after increasing batch_size. GPU sits idle waiting for CPU image decode + preprocessing.
+
+**Fix**: Increase num_workers. A/B/C tested 4/6/8 on a 192-core host:
+
+| num_workers | data_s | step/s |
+|-------------|--------|--------|
+| 4 | 0.74s | 1.0 |
+| 6 | 0.44s | 1.48 |
+| 8 | 0.36s | 1.67 |
+
+**Engineering insight**: The diagnostic is comparing data_s vs updt_s. If data_s > updt_s, you are CPU-bound (increase num_workers or batch prefetch). If updt_s dominates, you are GPU-bound (the model is the bottleneck).
+
+---
+
+### #16 — Too many num_workers causes dataset cache lock-file deadlock
+
+**Context**: Tried num_workers=16 to maximize throughput.
+
+**Symptom**: Training hung at "Creating dataset" with GPU at 0%. The HF datasets cache directory accumulated multiple zombie .lock files. Eventually the process was Killed.
+
+**Root cause**: With many workers all building/accessing the same HuggingFace datasets Arrow cache simultaneously, lock contention occurs. If the build is interrupted (e.g. OOM), zombie .lock files remain and corrupt subsequent loads.
+
+**Fix**:
+1. Cap num_workers at a safe value (8 worked, 16 deadlocked).
+2. When deadlock occurs, clear the cache: rm -rf $HF_DATASETS_CACHE/* then re-run.
+
+**Engineering insight**: More parallelism is not always faster. The dataset cache layer is a shared resource with locking semantics. The sweet spot balances dataloader throughput against cache contention.
+
+---
+
+### #17 — Distinguishing GPU-memory OOM from host-RAM OOM
+
+**Context**: Saw "Killed" during dataset creation and initially assumed GPU OOM.
+
+**Symptom**: Process Killed during "Creating dataset" phase, GPU memory at 3 MiB (basically empty).
+
+**Root cause**: It was NOT GPU OOM — GPU wasn't even being used yet during cache build. The kill was either host-RAM pressure (datasets buffering decoded images) or the cache lock deadlock from #16. Verified host had 1TB RAM, so it was the lock deadlock, not RAM exhaustion.
+
+**Fix**: Check free -h (host RAM) and nvidia-smi (GPU mem) separately to localize the OOM. During dataset creation, GPU is idle, so a kill there is host-side (RAM or cache lock), not GPU.
+
+**Engineering insight**: "Killed" is ambiguous. Always localize: is it the GPU (nvidia-smi during the crash) or the host (free -h, dmesg)? The training phase vs dataset-creation phase have completely different resource profiles.
